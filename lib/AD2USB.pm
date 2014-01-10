@@ -44,49 +44,44 @@ package AD2USB;
 
 @AD2USB::ISA = ('Generic_Item');
 
-my %CmdMsg;
-my %CmdMsgRev;
-my $Self;
+my $Self;  #Kludge
 my %ErrorCode;
 my $IncompleteCmd;
 my $connecttype;
 
 #    Starting a new object                                                  {{{
+# Called by user code `$AD2USB = new AD2USB`
 sub new {
    my ($class) = @_;
-   my $self = {};
-   $$self{panel_status}   = 'Unknown';
-   $$self{Log}            = [];
+   ::print_log("Starting ADEMCO panel interface module");
+
+   my $self = new Generic_Item();
+
+   # Initialize Variables
+   $$self{last_cmd}       = '';
+   $$self{Log}            = []; #Not clear why this is needed
    $$self{ac_power}       = 0;
    $$self{battery_low}    = 1;
    $$self{chime}          = 0;
+   $$self{keys_sent}      = 0;
+   $$self{reconnect_time} = $::config_parms{'AD2USB_ser2sock_recon'};
+   $$self{reconnect_time} = 10 if !defined($$self{reconnect_time});
 
    bless $self, $class;
 
    # load command hash
-   DefineCmdMsg();
+   $$self{CmdMsg} = $self->DefineCmdMsg();
+   $$self{CmdMsgRev} = {reverse %{$$self{CmdMsg}}}; #DeRef Hash, Rev, Conv to Ref
 
+   # The following logs default to being enabled, can only be disabled by 
+   # proactively setting their ini parameters to 0:
+   # AD2USB_part_log AD2USB_zone_log AD2USB_debug_log
 
-   my @LogType = qw(AD2USB_part_log AD2USB_zone_log AD2USB_debug_log);
-   foreach (@LogType) {
-      if ( !exists $::config_parms{$_} ) {
-         $main::config_parms{$_} = 1;
-         &::print_log("Parameter $_ not defined in mh.private.ini, enabling by default");
-      }
-   }
-
-   if ( !exists $::config_parms{'AD2USB_ser2sock_recon'} ) {
-       $::config_parms{'AD2USB_ser2sock_recon'} = 10;
-       &::print_log("Parameter AD2USB_ser2sock_recon not defined in mh.private.ini, enabling by default");
-     }
-
-   &main::print_log("Starting ADEMCO panel interface module");
-   $Self = $self;
-   
-   #Set all zones to ready
+   #Set all zones and partitions to ready
    ChangeZones( 1, 100, "ready", "ready", 0);
    ChangePartitions( 1, 1, "ready", 0);
-   $self->{keys_sent} = 0;
+
+   $Self = $self; #Kludge
 
    return $self;
 }
@@ -182,9 +177,9 @@ sub check_for_data {
       } else {
          # restart the TCP connection if its lost.
          if (inactive $recon_timer) {
-            &main::print_log("Connection to AD2USB was lost, I will try to reconnect in $::config_parms{'AD2USB_ser2sock_recon'} seconds");
+            &main::print_log("Connection to AD2USB was lost, I will try to reconnect in $$self{reconnect_time} seconds");
             # LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "AD2USB.pm ser2sock connection lost! Trying to reconnect." );
-            set $recon_timer $::config_parms{'AD2USB_ser2sock_recon'}, sub {
+            set $recon_timer $$self{reconnect_time}, sub {
                start $AD2USB_ser2sock;
                start $AD2USB_ser2sock_sender;
             }
@@ -207,24 +202,24 @@ sub check_for_data {
             my $status_type = GetStatusType($Cmd);
             if ($status_type >= 10) {
                # This is a panel message
-               if (($Cmd ne $self->{panel_status}) || ($status_type == 11))  {
+               if (($Cmd ne $self->{last_cmd}) || ($status_type == 11))  {
                   # This is a new message
-                  &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "NEW: $Cmd") if $main::config_parms{AD2USB_debug_log};
+                  &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "NEW: $Cmd") unless ($main::config_parms{AD2USB_debug_log} == 0);
                   CheckCmd($Cmd);
                   ResetAdemcoState();
-                  $self->{panel_status} = $Cmd;
+                  $self->{last_cmd} = $Cmd;
                }
                else {
                   # This is a duplicate message
-                  &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "DUPE: $Cmd") if $main::config_parms{AD2USB_debug_log};
+                  &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "DUPE: $Cmd") unless ($main::config_parms{AD2USB_debug_log} == 0);
                }
             }
             else {
                # This is a relay or RF or zone expander message
-               &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "NONPANEL: $Cmd") if $main::config_parms{AD2USB_debug_log};
+               &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "NONPANEL: $Cmd") unless ($main::config_parms{AD2USB_debug_log} == 0);
                CheckCmd($Cmd);
                ResetAdemcoState();
-	            #$self->{panel_status} = $Cmd;
+	            #$self->{last_cmd} = $Cmd;
             }
             $Cmd = '';
          }
@@ -250,22 +245,22 @@ sub CheckCmd {
    switch ( $status_type ) {
 
       case -1 {                         # UNRECOGNIZED STATUS
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "UNKNOWN STATUS: $CmdStr" ) if $main::config_parms{AD2USB_debug_log};
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "UNKNOWN STATUS: $CmdStr" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
       }
 
       case 0 {                          # Key send confirmation
          if ($self->{keys_sent} == 0) {
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Key sent from ANOTHER panel." ) if $main::config_parms{AD2USB_debug_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Key sent from ANOTHER panel." ) unless ($main::config_parms{AD2USB_debug_log} == 0);
          }
          else {
             $self->{keys_sent}--;
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Key received ($self->{keys_sent} left)" ) if $main::config_parms{AD2USB_debug_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Key received ($self->{keys_sent} left)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
          }
 
       }
 
       case 10 {               # FAULTS AVAILABLE
-#         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Faults exist and are available to parse" ) if $main::config_parms{AD2USB_debug_log};
+#         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Faults exist and are available to parse" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
          cmd( $self, "ShowFaults" );
       }
 
@@ -375,7 +370,7 @@ sub CheckCmd {
          my $status_codes = substr( $CmdStr, 1, 12 );
          my $fault = substr( $CmdStr, 23, 3 );
          my $panel_message = substr( $CmdStr, 61, 32);
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Key received ($self->{keys_sent} left)" ) if $main::config_parms{AD2USB_debug_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Key received ($self->{keys_sent} left)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
 
          # READY
          $data = 0;
@@ -468,7 +463,7 @@ sub CheckCmd {
          # PROGRAMMING MODE
          $data = 4;
          if ( substr($status_codes,$data,1) eq "1" ) {
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Panel is in programming mode" ) if $main::config_parms{AD2USB_debug_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Panel is in programming mode" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
 
             # Reset state for fault checks
             $self->{zone_last_status} = "";
@@ -510,7 +505,7 @@ sub CheckCmd {
          $data = 9;
          if ( substr($status_codes,$data,1) == "1" ) {
             $EventName = "ALARM WAS TRIGGERED";
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "$EventName" ) if $main::config_parms{AD2USB_part_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "$EventName" ) unless ($main::config_parms{AD2USB_part_log} == 0);
          }
 
          # ALARM IS SOUNDING
@@ -523,7 +518,7 @@ sub CheckCmd {
             my $ZoneNum = $fault;
             $ZoneName = $main::config_parms{"AD2USB_zone_$ZoneNum"}  if exists $main::config_parms{"AD2USB_zone_$ZoneNum"};
             $PartName = $main::config_parms{"AD2USB_part_$PartName"} if exists $main::config_parms{"AD2USB_part_$PartName"};
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "$EventName - Zone $ZoneNum ($ZoneName)" ) if $main::config_parms{AD2USB_part_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "$EventName - Zone $ZoneNum ($ZoneName)" ) unless ($main::config_parms{AD2USB_part_log} == 0);
             $ZoneNum =~ s/^0*//;
             ChangeZones( int($ZoneNum), int($ZoneNum), "alarm", "", 1);
             $self->{zone_now_msg}         = "$panel_message";
@@ -571,8 +566,8 @@ sub CheckCmd {
          my $loop_fault_4 = 0;
          $loop_fault_4 = 1 if (hex(substr($rf_status, 0, 1)) & 4) == 4;
 
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "WIRELESS: rf_id($rf_id) status($rf_status) loop1($loop_fault_1) loop2($loop_fault_2) loop3($loop_fault_3) loop4($loop_fault_4)" ) if $main::config_parms{AD2USB_debug_log};
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "WIRELESS: rf_id($rf_id) status($rf_status) low_batt($low_batt) supervised($supervised)" ) if $main::config_parms{AD2USB_debug_log};
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "WIRELESS: rf_id($rf_id) status($rf_status) loop1($loop_fault_1) loop2($loop_fault_2) loop3($loop_fault_3) loop4($loop_fault_4)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "WIRELESS: rf_id($rf_id) status($rf_status) low_batt($low_batt) supervised($supervised)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
 
          my $ZoneStatus = "ready";
          my $PartStatus = "";
@@ -638,7 +633,7 @@ sub CheckCmd {
 	 my $ZoneStatus;
          my $PartStatus;
 
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "EXPANDER: exp_id($exp_id) input($input_id) status($status)" ) if $main::config_parms{AD2USB_debug_log};
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "EXPANDER: exp_id($exp_id) input($input_id) status($status)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
 
        if (exists $main::config_parms{"AD2USB_expander_$exp_id$input_id"}) {
             # Assign zone
@@ -681,7 +676,7 @@ sub CheckCmd {
          my $PartStatus;
 
 
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "RELAY: rel_id($rel_id) input($rel_input_id) status($rel_status)" ) if $main::config_parms{AD2USB_debug_log};
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "RELAY: rel_id($rel_id) input($rel_input_id) status($rel_status)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
 
           if (exists $main::config_parms{"AD2USB_relay_$rel_id$rel_input_id"}) {
             # Assign zone
@@ -716,7 +711,7 @@ sub CheckCmd {
       }
 
       else {
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "SOMETHING SERIOUSLY WRONG - UNKNOWN COMMAND" ) if $main::config_parms{AD2USB_debug_log};
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "SOMETHING SERIOUSLY WRONG - UNKNOWN COMMAND" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
       }
    }
 
@@ -732,14 +727,14 @@ sub CheckCmd {
          # BACKLIGHT
          $data = 3;
          if ( substr($status_codes,$data,1) == "1" ) {
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Panel backlight is on" ) if $main::config_parms{AD2USB_debug_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Panel backlight is on" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
          }
 
          # BEEPS
          $data = 5;
          if ( substr($status_codes,$data,1) != "0" ) {
             $NumBeeps = substr($status_codes,$data,1);
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Panel beeped $NumBeeps times" ) if $main::config_parms{AD2USB_debug_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Panel beeped $NumBeeps times" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
          }
 
          # AC POWER
@@ -756,11 +751,11 @@ sub CheckCmd {
          $data = 8;
          if ( substr($status_codes,$data,1) == "0" ) { 
             $self->{chime} = 0;
-#            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Chime is off" ) if $main::config_parms{AD2USB_debug_log};
+#            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Chime is off" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
          }
          else {
             $self->{chime} = 1;
-#            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Chime is on" ) if $main::config_parms{AD2USB_debug_log};
+#            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Chime is on" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
          }
    
          # BATTERY LOW
@@ -804,15 +799,15 @@ sub GetStatusType {
       # TODO I would be inclined to split by comma rather than use substr
       my $substatus = substr($AdemcoStr, 61, 5);
       if ( $substatus eq "FAULT" ) {
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Fault zones available: $AdemcoStr") if $main::config_parms{AD2USB_debug_log};
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Fault zones available: $AdemcoStr") unless ($main::config_parms{AD2USB_debug_log} == 0);
          return 11;
       }
       elsif ( $substatus eq "BYPAS" ) {
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Bypass zones available: $AdemcoStr") if $main::config_parms{AD2USB_debug_log};
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Bypass zones available: $AdemcoStr") unless ($main::config_parms{AD2USB_debug_log} == 0);
          return 12;
       }
       elsif ($AdemcoStr =~ m/Hit \*|Press \*/) {
-         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Faults available: $AdemcoStr") if $main::config_parms{AD2USB_debug_log};
+         &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Faults available: $AdemcoStr") unless ($main::config_parms{AD2USB_debug_log} == 0);
          return 10;
       }
       else {
@@ -821,19 +816,19 @@ sub GetStatusType {
       }
    }
    elsif (substr($AdemcoStr,0,5) eq "!RFX:") {
-      &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Wireless status received.") if $main::config_parms{AD2USB_debug_log};
+      &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Wireless status received.") unless ($main::config_parms{AD2USB_debug_log} == 0);
       return 2;
    }
    elsif (substr($AdemcoStr,0,5) eq "!EXP:") {
-      &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Expander status received.") if $main::config_parms{AD2USB_debug_log};
+      &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Expander status received.") unless ($main::config_parms{AD2USB_debug_log} == 0);
       return 3;
    }
    elsif (substr($AdemcoStr,0,5) eq "!REL:") {
-      &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Relay status received.") if $main::config_parms{AD2USB_debug_log};
+      &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Relay status received.") unless ($main::config_parms{AD2USB_debug_log} == 0);
       return 4;
    }
    elsif ($AdemcoStr eq "!Sending...done") {
-      &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Command sent successfully.") if $main::config_parms{AD2USB_debug_log};;
+      &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Command sent successfully.") unless ($main::config_parms{AD2USB_debug_log} == 0);
       return 0;
    }
    return -1;
@@ -852,13 +847,13 @@ sub ChangeZones {
    for ($i = $start; $i <= $end; $i++) {
       $current_status = $self->{zone_status}{"$i"};
       if (($current_status ne $new_status) && ($current_status ne $neq_status)) {
-         if (($main::config_parms{AD2USB_zone_log}) && ($log == 1)) {
+         if (($main::config_parms{AD2USB_zone_log} != 0) && ($log == 1)) {
             my $ZoneNumPadded = $i; 
             $ZoneNumPadded = sprintf("%3d", $ZoneNumPadded);
             $ZoneNumPadded =~ tr/ /0/;
             $ZoneName = "Unknown";
             $ZoneName = $main::config_parms{"AD2USB_zone_$ZoneNumPadded"}  if exists $main::config_parms{"AD2USB_zone_$ZoneNumPadded"};
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Zone $i ($ZoneName) changed from '$current_status' to '$new_status'" ) if $main::config_parms{AD2USB_zone_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Zone $i ($ZoneName) changed from '$current_status' to '$new_status'" ) unless ($main::config_parms{AD2USB_zone_log} == 0);
          }
          $self->{zone_status}{"$i"} = $new_status;
 	 #  Set child object status if it is registered to the zone
@@ -879,9 +874,9 @@ sub ChangePartitions {
    for ($i = $start; $i <= $end; $i++) {
       $current_status = $self->{partition_status}{"$i"};
       if ($current_status ne $new_status) {
-         if (($main::config_parms{AD2USB_part_log}) && ($log == 1)) {
+         if (($main::config_parms{AD2USB_part_log} != 0) && ($log == 1)) {
             $PartName = $main::config_parms{"AD2USB_part_$i"}  if exists $main::config_parms{"AD2USB_part_$i"};
-            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Partition $i ($PartName) changed from '$current_status' to '$new_status'" ) if $main::config_parms{AD2USB_part_log};
+            &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", "Partition $i ($PartName) changed from '$current_status' to '$new_status'" ) unless ($main::config_parms{AD2USB_part_log} == 0);
          }
          $self->{partition_status}{"$i"} = $new_status;
       }
@@ -931,38 +926,7 @@ sub ResetAdemcoState {
 #}}}
 #    Define hash with Ademco commands                                           {{{
 sub DefineCmdMsg {
-  my %OutputListco;
-   foreach my $key (keys(%::config_parms)) {
-    next if $key =~ /_MHINTERNAL_/;
-    next if $key !~ /^AD2USB_output_(\D+)_(\d+)$/;
-      if ($1 eq 'co') {
-       $OutputListco{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
-       $OutputListco{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
-       }
-      if ($1 eq 'oc') {
-       $OutputListco{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
-       $OutputListco{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
-       }
-      if ($1 eq 'o') {
-       $OutputListco{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
-       }
-      if ($1 eq 'c') {
-       $OutputListco{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
-       }
-     }
- 
- my %ExpListc;
-  my $srpzonenum;
-  foreach my $key (keys(%::config_parms)) {
-    next if $key =~ /_MHINTERNAL_/;
-    next if $key !~ /^AD2USB_expander_(\d+)$/;
-       $srpzonenum = substr($::config_parms{$key}, 1);
-       $ExpListc{"exp$::config_parms{$key}c"} = "L$srpzonenum"."0";
-       $ExpListc{"exp$::config_parms{$key}f"} = "L$srpzonenum"."1";
-       $ExpListc{"exp$::config_parms{$key}p"} = "L$srpzonenum"."2";  
-     } 
-
-   %CmdMsg = (
+   my %Return_Hash = (
       "Disarm"                            => "$::config_parms{AD2USB_user_master_code}1",
       "ArmAway"                           => "$::config_parms{AD2USB_user_master_code}2",
       "ArmStay"                           => "$::config_parms{AD2USB_user_master_code}3",
@@ -977,13 +941,36 @@ sub DefineCmdMsg {
       "AD2USBReboot"                      => "=",
       "AD2USBConfigure"                   => "!"
    );
- 
-   my %newHash = (%OutputListco, %CmdMsg); 
-   %CmdMsg = %newHash;
-   %newHash = (%ExpListc, %CmdMsg);
-   %CmdMsg = %newHash;
-   %CmdMsgRev = reverse %CmdMsg;
-   return;
+
+   my $two_digit_zone;
+   foreach my $key (keys(%::config_parms)) {
+      #Create Commands for Relays
+      if ($key =~ /^AD2USB_output_(\D+)_(\d+)$/){
+         if ($1 eq 'co') {
+            $Return_Hash{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
+            $Return_Hash{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
+         }
+         elsif ($1 eq 'oc') {
+            $Return_Hash{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
+            $Return_Hash{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
+         }
+         elsif ($1 eq 'o') {
+            $Return_Hash{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
+         }
+         elsif ($1 eq 'c') {
+            $Return_Hash{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
+         }
+      }
+      #Create Commands for Zone Expanders
+      elsif ($key =~ /^AD2USB_expander_(\d+)$/) {
+         $two_digit_zone = substr($::config_parms{$key}, 1); #Trim leading zero
+         $Return_Hash{"exp$::config_parms{$key}c"} = "L$two_digit_zone"."0";
+         $Return_Hash{"exp$::config_parms{$key}f"} = "L$two_digit_zone"."1";
+         $Return_Hash{"exp$::config_parms{$key}p"} = "L$two_digit_zone"."2"; 
+      }
+   }
+
+   return \%Return_Hash;
 }
 
 #}}}
@@ -993,7 +980,6 @@ sub ZoneName {
    my @Name = ["none"];
 
 	foreach my $key (keys(%::config_parms)) {
-		next if $key =~ /_MHINTERNAL_/;
 		next if $key !~ /^AD2USB_zone_(\d+)$/;
 		$Name[int($1)]=$::config_parms{$key};
 	}
@@ -1003,7 +989,6 @@ sub ZoneName {
 
 sub MappedZones {
 	foreach my $mkey (keys(%::config_parms)) {
-                next if $mkey =~ /_MHINTERNAL_/;
                 next if $mkey !~ /^AD2USB_(relay|wireless|expander)_(\d+)$/;
                 if ("@_" eq $::config_parms{$mkey}) { return 1 }
         }
@@ -1013,11 +998,10 @@ sub MappedZones {
 #}}}
 #    Sending command to ADEMCO panel                                           {{{
 sub cmd {
+   my ( $self, $cmd, $password ) = @_;
+   $cmd = $self->{CmdMsg}->{$cmd};
 
-   my ( $class, $cmd, $password ) = @_;
-   $cmd = $CmdMsg{$cmd};
-
-   $CmdName = ( exists $CmdMsgRev{$cmd} ) ? $CmdMsgRev{$cmd} : "unknown";
+   $CmdName = ( exists $self->{CmdMsgRev}->{$cmd} ) ? $self->{CmdMsgRev}->{$cmd} : "unknown";
    $CmdStr = $cmd;
 
    # Exit if unknown command
@@ -1032,8 +1016,8 @@ sub cmd {
       return;
    }
 
-   &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", ">>> Sending to ADEMCO panel                      $CmdName ($cmd)" ) if $main::config_parms{AD2USB_debug_log};
-   $class->{keys_sent} = $class->{keys_sent} + length($CmdStr);
+   &LocalLogit( "$main::config_parms{data_dir}/logs/AD2USB.$main::Year_Month_Now.log", ">>> Sending to ADEMCO panel                      $CmdName ($cmd)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+   $self->{keys_sent} = $self->{keys_sent} + length($CmdStr);
    if ($connecttype eq 'serial') {
     $main::Serial_Ports{AD2USB}{object}->write("$CmdStr");
     } else {
@@ -1109,7 +1093,8 @@ sub partition_name {
 }
 
 sub cmd_list {
-   foreach my $k ( sort keys %CmdMsg ) {
+   my ($self) = @_;
+   foreach my $k ( sort keys %{$self->{CmdMsg}} ) {
       &::print_log("$k");
    }
 }
