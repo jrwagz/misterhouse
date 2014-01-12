@@ -273,7 +273,7 @@ sub check_for_data {
             # Log the message, parse it, and store it to detect future dupes
             ::logit( $self{log_file}, "MSG: $Cmd") unless ($main::config_parms{AD2USB_debug_log} == 0);
             $self->CheckCmd($Cmd);
-            ResetAdemcoState();
+            $self->ResetAdemcoState();
             $self->{last_cmd} = $Cmd if ($status_type->{keypad});
          }
       }
@@ -311,29 +311,22 @@ sub CheckCmd {
    }
    elsif ($status_type->{fault}) {
       my $PartNum = "1";
-      my $ZoneName = $main::config_parms{"AD2USB_zone_${zone_padded}"} 
-         if exists $main::config_parms{"AD2USB_zone_${zone_padded}"};
+      my $ZoneName = $main::config_parms{"AD2USB_zone_${zone_padded}"};
 
       # Each fault message tells us two things, 1) this zone is faulted and 
       # 2) all zones between this zone and the last fault are ready.
-      if (MappedZones($zone_padded)) {
-         #Why do we not reset mapped zones?  Don't they appear in the fault loop
-         #too?  
-         ::logit( $self{log_file}, "Zone $zone_no_pad is mapped to a Relay, RF ID, or expander, skipping normal monitoring!") } 
-      else {
-         #Reset the zones between the current zone and the last zone. If zones
-         #are sequential do nothing, if same zone, reset all other zones
-         if ($self->{zone_last_num} - $zone_no_pad > 1 
-            || $self->{zone_last_num} - $zone_no_pad == 0) {
-            ChangeZones( $self->{zone_last_num}+1, $zone_no_pad-1, "ready", "bypass", 1);
-         }
+      
+      #Reset the zones between the current zone and the last zone. If zones
+      #are sequential do nothing, if same zone, reset all other zones
+      if ($self->{zone_last_num} - $zone_no_pad > 1 
+         || $self->{zone_last_num} - $zone_no_pad == 0) {
+         ChangeZones( $self->{zone_last_num}+1, $zone_no_pad-1, "ready", "bypass", 1);
+      }
 
-         $self->{zone_now_msg}            = $status_type->{alphanumeric};
-         $self->{zone_now_status}         = "fault";
-         $self->{zone_now_name}           = $ZoneName;
-         $self->{zone_now_num}            = $zone_no_pad;
-         ChangeZones( $zone_no_pad, $zone_no_pad, "fault", "", 1);
-      } #End MappedZones
+      $self->{zone_now_status}         = "fault";
+      $self->{zone_now_name}           = $ZoneName;
+      $self->{zone_now_num}            = $zone_no_pad;
+      ChangeZones( $zone_no_pad, $zone_no_pad, "fault", "", 1);
       $self->{partition_now_msg}       = $status_type->{alphanumeric}; 
       $self->{partition_now_status}    = "not ready";
       $self->{partition_now_num}       = $PartNum;
@@ -343,7 +336,6 @@ sub CheckCmd {
       my $PartNum = "1";
       my $ZoneName = $main::config_parms{"AD2USB_zone_${zone_padded}"} if exists $main::config_parms{"AD2USB_zone_${zone_padded}"};
       
-      $self->{zone_now_msg}            = $status_type->{alphanumeric};
       $self->{zone_now_status}         = "bypass";
       $self->{zone_now_name}           = $ZoneName;
       $self->{zone_now_num}            = $zone_no_pad;
@@ -394,14 +386,12 @@ sub CheckCmd {
                  $ZoneStatus = "ready";
                }
    
-               $self->{zone_now_msg}            = "$CmdStr";
                $self->{zone_now_status}         = "$ZoneStatus";
                $self->{zone_now_name}           = "$ZoneName";
                $self->{zone_now_num}            = "$ZoneNum";
                ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
                if ($sensortype eq "k") {
                   $ZoneStatus = "ready";
-                  $self->{zone_now_msg}            = "$CmdStr";
                   $self->{zone_now_status}         = "$ZoneStatus";
                   $self->{zone_now_name}           = "$ZoneName";
                   $self->{zone_now_num}            = "$ZoneNum";
@@ -432,7 +422,6 @@ sub CheckCmd {
             $PartStatus = "not ready";
          }
 
-         $self->{zone_now_msg}            = $status_type->{alphanumeric};
          $self->{zone_now_status}         = "$ZoneStatus";
          $self->{zone_now_name}           = "$ZoneName";
          $self->{zone_now_num}            = "$ZoneNum";
@@ -460,7 +449,6 @@ sub CheckCmd {
             $PartStatus = "not ready";
          }
 
-         $self->{zone_now_msg}            = "$CmdStr";
          $self->{zone_now_status}         = "$ZoneStatus";
          $self->{zone_now_name}           = "$ZoneName";
          $self->{zone_now_num}            = "$ZoneNum";
@@ -630,7 +618,6 @@ sub CheckCmd {
          ::logit( $self{log_file}, "$EventName - Zone $zone_no_pad ($ZoneName)" ) 
             unless ($main::config_parms{AD2USB_part_log} == 0);
          ChangeZones( $zone_no_pad, $zone_no_pad, "alarm", "", 1);
-         $self->{zone_now_msg}         = $status_type->{alphanumeric};
          $self->{zone_now_status}      = "alarm";
          $self->{zone_now_num}         = $zone_no_pad;
          $self->{partition_now_msg}    = $status_type->{alphanumeric};
@@ -777,8 +764,7 @@ sub ChangePartitions {
 #}}}
 #    Reset Ademco state to simulate a "now" on some value ie: zone, temp etc.  {{{
 sub ResetAdemcoState {
-
-   my $self = $Self;
+   my ($self) = @_;
    # store faults (fault and bypass) for next message parsing
    if (($self->{zone_now_status} eq "fault") || ($self->{zone_now_status} eq "bypass")) {
       $self->{zone_last_status} = $self->{zone_now_status};
@@ -790,13 +776,11 @@ sub ResetAdemcoState {
    if ( defined $self->{zone_now_num} ) {
       my $ZoneNum = $self->{zone_now_num};
       $self->{zone_num}{$ZoneNum}   = $self->{zone_now_num};
-      $self->{zone_msg}{$ZoneNum}    = $self->{zone_now_msg};
       $self->{zone_status}{$ZoneNum} = $self->{zone_now_status};
       $self->{zone_time}{$ZoneNum}   = &::time_date_stamp( 17, time );
       undef $self->{zone_now_num};
       undef $self->{zone_now_name};
       undef $self->{zone_now_status};
-      undef $self->{zone_now_msg};
    }
 
    # reset partition
@@ -935,10 +919,6 @@ sub cmd {
 
 sub zone_now {
    return $_[0]->{zone_now_name} if defined $_[0]->{zone_now_name};
-}
-
-sub zone_msg {
-   return $_[0]->{zone_now_msg} if defined $_[0]->{zone_now_msg};
 }
 
 sub zone_now_restore {
