@@ -101,10 +101,9 @@ use strict;
 
 @AD2USB::ISA = ('Generic_Item');
 
-my $Self;  #Kludge
-my %ErrorCode;
 my %Socket_Items; #Stores the socket instances and attributes
 my %Interfaces; #Stores the relationships btw instances and interfaces
+my %Configuration; #Stores the local config parms 
 
 #    Starting a new object                                                  {{{
 # Called by user code `$AD2USB = new AD2USB`
@@ -116,15 +115,14 @@ sub new {
    my $self = new Generic_Item();
 
    # Initialize Variables
-   $$self{last_cmd}       = '';
    $$self{ac_power}       = 0;
    $$self{battery_low}    = 1;
    $$self{chime}          = 0;
    $$self{keys_sent}      = 0;
    $$self{instance}       = $instance;
-   $$self{reconnect_time} = $::config_parms{'AD2USB_ser2sock_recon'};
+   $$self{reconnect_time} = $::config_parms{$instance.'_ser2sock_recon'};
    $$self{reconnect_time} = 10 if !defined($$self{reconnect_time});
-   $$self{log_file}       = "$::config_parms{data_dir}/logs/AD2USB.$::Year_Month_Now.log";
+   $$self{log_file}       = $::config_parms{'data_dir'}."/logs/AD2USB.$::Year_Month_Now.log";
 
    bless $self, $class;
 
@@ -137,13 +135,13 @@ sub new {
    # AD2USB_part_log AD2USB_zone_log AD2USB_debug_log
 
    #Set all zones and partitions to ready
-   ChangeZones( 1, 100, "ready", "ready", 0);
-   ChangePartitions( 1, 1, "ready", 0);
+   $self->ChangeZones( 1, 999, "ready", "ready", 0);
 
    #Store Object with Instance Name
    $self->set_object_instance($instance);
 
-   $Self = $self; #Kludge
+   #Load the Parameters from the INI file
+   $self->read_parms($instance);
 
    return $self;
 }
@@ -161,6 +159,44 @@ sub set_object_instance{
    $Interfaces{$instance} = $self;
 }
 #}}}
+
+# Reads the ini settings and pushes them into the appropriate Hashes
+sub read_parms{
+   my ($self, $instance) = @_;
+   foreach my $mkey (keys(%::config_parms)) {
+      next if $mkey =~ /_MHINTERNAL_/;
+      #Load All Configuration Settings
+      $Configuration{$mkey} = $::config_parms{$mkey} if $mkey =~ /^AD2USB_/;
+      #Put wireless settings in correct hash
+      if ($mkey =~ /^${instance}_wireless_(.*)/){
+         $$self{wireless}{$1} = $::config_parms{$mkey};
+      }
+      #Put expander settings in correct hash
+      if ($mkey =~ /^${instance}_expander_(.*)/){
+         $$self{expander}{$1} = $::config_parms{$mkey};
+      }
+      #Put relay settings in correct hash
+      if ($mkey =~ /^${instance}_relay_(.*)/){
+         $$self{relay}{$1} = $::config_parms{$mkey};
+      }
+      #Put Partition Addresses in Correct Hash
+      if ($mkey =~ /^${instance}_partition_(\d*)_address$/){
+         $$self{partition_address}{$1} = $::config_parms{$mkey};
+      }
+      #Put Zone Names in Correct Hash
+      if ($mkey =~ /^${instance}_partition_(\d*)$/){
+         $$self{zone_name}{$1} = $::config_parms{$mkey};
+      }
+      #Put Zone Partition Relationship in Correct Hash
+      if ($mkey =~ /^${instance}_zone_(\d*)_partition$/){
+         $$self{zone_partition}{$1} = $::config_parms{$mkey};
+      }
+      #Put Partition Name in Correct Hash
+      if ($mkey =~ /^${instance}_part_(\d)$/){
+         $$self{partition_name}{$1} = $::config_parms{$mkey};
+      }
+   }
+}
 
 #    serial port configuration                                         {{{
 sub init {
@@ -188,10 +224,10 @@ sub serial_startup {
    if ($::config_parms{$instance . '_serial_port'} and 
          $::config_parms{$instance . '_serial_port'} ne '/dev/none') {
       $port = $::config_parms{$instance .'_serial_port'};
-      $BaudRate = ( defined $::config_parms{$instance . '_baudrate'} ) ? $main::config_parms{"$instance" . '_baudrate'} : 115200;
+      $BaudRate = ( defined $::config_parms{$instance . '_baudrate'} ) ? $::config_parms{"$instance" . '_baudrate'} : 115200;
       if ( &main::serial_port_create( $instance, $port, $BaudRate, 'none', 'raw' ) ) {
          init( $::Serial_Ports{$instance}{object}, $port );
-         ::print_log("[AD2USB] initializing $instance on port $port at $BaudRate baud") if $main::config_parms{debug} eq 'AD2USB';
+         ::print_log("[AD2USB] initializing $instance on port $port at $BaudRate baud") if $main::Debug{'AD2USB'};
          ::MainLoop_pre_add_hook( sub {AD2USB::check_for_data($instance, 'serial');}, 1 ) if $main::Serial_Ports{"$instance"}{object};
       }
    }
@@ -205,12 +241,12 @@ sub server_startup {
    $Socket_Items{"$instance"}{recon_timer} = ::Timer::new();
    my $ip = $::config_parms{"$instance".'_server_ip'};
    my $port = $::config_parms{"$instance" . '_server_port'};
-   ::print_log("  AD2USB.pm initializing $instance TCP session with $ip on port $port") if $main::config_parms{debug} eq 'AD2USB';
-   $Socket_Items{"$instance"}{'socket'} = new Socket_Item($instance, undef, "$ip:$port", 'AD2USB', 'tcp', 'raw');
-   $Socket_Items{"$instance" . '_sender'}{'socket'} = new Socket_Item($instance . '_sender', undef, "$ip:$port", 'AD2USB_SENDER', 'tcp', 'rawout');
+   ::print_log("  AD2USB.pm initializing $instance TCP session with $ip on port $port") if $main::Debug{'AD2USB'};
+   $Socket_Items{"$instance"}{'socket'} = new Socket_Item($instance, undef, "$ip:$port", $instance, 'tcp', 'raw');
+   $Socket_Items{"$instance" . '_sender'}{'socket'} = new Socket_Item($instance . '_sender', undef, "$ip:$port", $instance . '_sender', 'tcp', 'rawout');
    $Socket_Items{"$instance"}{'socket'}->start;
    $Socket_Items{"$instance" . '_sender'}{'socket'}->start;
-   &::MainLoop_pre_add_hook( sub {AD2USB::check_for_data($instance, 'tcp');}, 1 );
+   ::MainLoop_pre_add_hook( sub {AD2USB::check_for_data($instance, 'tcp');}, 1 );
 }
 
 #}}}
@@ -222,6 +258,10 @@ sub check_for_data {
    my ($instance, $connecttype) = @_;
    my $self = get_object_by_instance($instance);
    my $NewCmd;
+
+   # Clear Zone and Partition_Now Function
+   $self->{zone_now} = ();
+   $self->{partition_now} = ();
 
    # Get the date from serial or tcp source
    if ($connecttype eq 'serial') {
@@ -265,15 +305,14 @@ sub check_for_data {
          if ($status_type->{keypad} && $Cmd eq $self->{last_cmd} &&
             (!$status_type->{fault})) {
             # This is a duplicate panel message with no important status
-            ::logit( $$self{log_file}, "DUPE: $Cmd") unless ($main::config_parms{AD2USB_debug_log} == 0);
+            $self->debug_log("DUPE: $Cmd");
          }
          else {
             # This is a non-dupe panel message or a fault panel message or a
             # relay or RF or zone expander message or something important
             # Log the message, parse it, and store it to detect future dupes
-            ::logit( $$self{log_file}, "MSG: $Cmd") unless ($main::config_parms{AD2USB_debug_log} == 0);
+            $self->debug_log("MSG: $Cmd");
             $self->CheckCmd($Cmd);
-            $self->ResetAdemcoState();
             $self->{last_cmd} = $Cmd if ($status_type->{keypad});
          }
       }
@@ -292,17 +331,19 @@ sub CheckCmd {
    my $status_type = $self->GetStatusType($CmdStr);
    my $zone_padded = $status_type->{numeric_code};
    my $zone_no_pad = int($zone_padded);
+   my @partitions = $status_type->{partition};
+   my $instance = $self->{instance};
    
    if ($status_type->{unknown}) {
-      ::logit( $$self{log_file}, "UNKNOWN STATUS: $CmdStr" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+      $self->debug_log("UNKNOWN STATUS: $CmdStr");
    }
    elsif ($status_type->{cmd_sent}) {
       if ($self->{keys_sent} == 0) {
-         ::logit( $$self{log_file}, "Key sent from ANOTHER panel." ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->debug_log("Key sent from ANOTHER panel.");
       }
       else {
          $self->{keys_sent}--;
-         ::logit( $$self{log_file}, "Key received ($self->{keys_sent} left)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->debug_log("Key received ($self->{keys_sent} left)");
       }
    }
    elsif ($status_type->{fault_avail}) {
@@ -310,52 +351,41 @@ sub CheckCmd {
       cmd( $self, "ShowFaults" );
    }
    elsif ($status_type->{fault}) {
-      my $PartNum = "1";
-      my $ZoneName = $main::config_parms{"AD2USB_zone_${zone_padded}"};
-
       # Each fault message tells us two things, 1) this zone is faulted and 
       # 2) all zones between this zone and the last fault are ready.
       
-      #Reset the zones between the current zone and the last zone. If zones
-      #are sequential do nothing, if same zone, reset all other zones
-      if ($self->{zone_last_num} - $zone_no_pad > 1 
-         || $self->{zone_last_num} - $zone_no_pad == 0) {
-         ChangeZones( $self->{zone_last_num}+1, $zone_no_pad-1, "ready", "bypass", 1);
+      #Loop through partions set in message
+      foreach my $partition (@partitions){
+         #Reset the zones between the current zone and the last zone. If zones
+         #are sequential do nothing, if same zone, reset all other zones
+         if ($self->{zone_last_num}{$partition} - $zone_no_pad > 1 
+            || $self->{zone_last_num}{$partition} - $zone_no_pad == 0) {
+            $self->ChangeZones( $self->{zone_last_num}{$partition}+1, $zone_no_pad-1, "ready", "bypass", 1, $partition);
+         }
+   
+         # Set this zone to faulted
+         $self->ChangeZones( $zone_no_pad, $zone_no_pad, "fault", "", 1);
+         
+         # Store Zone Number for Use in Fault Loop
+         $self->{zone_last_num}{$partition}           = $zone_no_pad;
       }
-
-      # Set this zone to faulted
-      ChangeZones( $zone_no_pad, $zone_no_pad, "fault", "", 1);
-      
-      # Store Zone Number for Use in Fault Loop
-      $self->{zone_last_num}            = $zone_no_pad;
-      $self->{partition_now_msg}       = $status_type->{alphanumeric}; 
-      $self->{partition_now_status}    = "not ready";
-      $self->{partition_now_num}       = $PartNum;
-      ChangePartitions( int($PartNum), int($PartNum), "not ready", 1);
    }
    elsif ($status_type->{bypass}) {
-      my $PartNum = "1";
-      my $ZoneName = $main::config_parms{"AD2USB_zone_${zone_padded}"} if exists $main::config_parms{"AD2USB_zone_${zone_padded}"};
-
-      ChangeZones( $zone_no_pad, $zone_no_pad, "bypass", "", 1);
-      $self->{partition_now_msg}       = $status_type->{alphanumeric};
-      $self->{partition_now_status}    = "not ready";
-      $self->{partition_now_num}       = $PartNum;
-      ChangePartitions( int($PartNum), int($PartNum), "not ready", 1);
+      $self->ChangeZones( $zone_no_pad, $zone_no_pad, "bypass", "", 1);
    }
    elsif ($status_type->{wireless}) {
-      ::logit( $$self{log_file}, "WIRELESS: rf_id("
+      $self->debug_log( $$self{log_file}, "WIRELESS: rf_id("
          .$status_type->{rf_id}.") status(".$status_type->{rf_status}.") loop1("
          .$status_type->{rf_loop_fault_1}.") loop2(".$status_type->{rf_loop_fault_2}
          .") loop3(".$status_type->{rf_loop_fault_3}.") loop4("
-         .$status_type->{rf_loop_fault_4}.")" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
-      ::logit( $$self{log_file}, "WIRELESS: rf_id("
+         .$status_type->{rf_loop_fault_4}.")" );
+      $self->debug_log( $$self{log_file}, "WIRELESS: rf_id("
          .$status_type->{rf_id}.") status(".$status_type->{rf_status}.") low_batt("
          .$status_type->{rf_low_batt}.") supervised(".$status_type->{rf_supervised}
-         .")" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+         .")" );
 
-      if (exists $main::config_parms{"AD2USB_wireless_".$status_type->{rf_id}}) {
-         my ($MZoneLoop, $PartStatus, $ZoneNum, $ZoneName);
+      if (defined $$self{wireless}{$status_type->{rf_id}}) {
+         my ($MZoneLoop, $PartStatus, $ZoneNum);
          my $lc = 0;
          my $ZoneStatus = "ready";
 
@@ -364,15 +394,12 @@ sub CheckCmd {
             $ZoneStatus = "low battery";
          }
    
-         foreach my $wnum(split(",", $main::config_parms{"AD2USB_wireless_".$status_type->{rf_id}})) {
+         foreach my $wnum(split(",", $$self{wireless}{$status_type->{rf_id}})) {
             if ($lc % 2 == 0) { 
                $ZoneNum = $wnum;
             }
             else {
                my ($sensortype, $ZoneLoop) = split("", $wnum);
-               $ZoneName = "Unknown";
-               $ZoneName = $main::config_parms{"AD2USB_zone_$ZoneNum"} if exists $main::config_parms{"AD2USB_zone_$ZoneNum"};
-   
                if ($ZoneLoop eq "1") {$MZoneLoop = $status_type->{rf_loop_fault_1}}
                if ($ZoneLoop eq "2") {$MZoneLoop = $status_type->{rf_loop_fault_2}}
                if ($ZoneLoop eq "3") {$MZoneLoop = $status_type->{rf_loop_fault_3}}
@@ -384,10 +411,10 @@ sub CheckCmd {
                  $ZoneStatus = "ready";
                }
 
-               ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
+               $self->ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
                if ($sensortype eq "k") {
                   $ZoneStatus = "ready";
-                  ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
+                  $self->ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
                }
             }
          $lc++
@@ -399,22 +426,11 @@ sub CheckCmd {
       my $input_id = $status_type->{exp_channel};
       my $status = $status_type->{exp_status};
 
-      ::logit( $$self{log_file}, "EXPANDER: exp_id($exp_id) input($input_id) status($status)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+      $self->debug_log("EXPANDER: exp_id($exp_id) input($input_id) status($status)");
 
-      if (exists $main::config_parms{"AD2USB_expander_$exp_id$input_id"}) {
-         my $ZoneNum = $main::config_parms{"AD2USB_expander_$exp_id$input_id"};
-         my $ZoneName = "Unknown";
-         $ZoneName = $main::config_parms{"AD2USB_zone_$ZoneNum"} if exists $main::config_parms{"AD2USB_zone_$ZoneNum"};
-         # Assign status (zone and partition)
-
-         my $ZoneStatus = "ready";
-         my $PartStatus = "";
-         if ($status == 01) {
-            $ZoneStatus = "fault";
-            $PartStatus = "not ready";
-         }
-
-         ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
+      if (my $ZoneNum = $$self{expander}{$exp_id.$input_id}) {
+         my $ZoneStatus = ($status == 01) ? "fault" : "ready";
+         $self->ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
       }
    }
    elsif ($status_type->{relay}) {
@@ -422,31 +438,11 @@ sub CheckCmd {
       my $rel_input_id = $status_type->{rel_channel};
       my $rel_status = $status_type->{rel_status};
 
-      ::logit( $$self{log_file}, "RELAY: rel_id($rel_id) input($rel_input_id) status($rel_status)" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+      $self->debug_log("RELAY: rel_id($rel_id) input($rel_input_id) status($rel_status)");
 
-      if (exists $main::config_parms{"AD2USB_relay_$rel_id$rel_input_id"}) {
-         # Assign zone
-         my $ZoneNum = $main::config_parms{"AD2USB_relay_$rel_id$rel_input_id"};
-         my $ZoneName = "Unknown";
-         $ZoneName = $main::config_parms{"AD2USB_zone_$ZoneNum"} if exists $main::config_parms{"AD2USB_zone_$ZoneNum"};
-
-         # Assign status (zone and partition)
-         my $ZoneStatus = "ready";
-         my $PartStatus = "";
-         if ($rel_status == 01) {
-            $ZoneStatus = "fault";
-            $PartStatus = "not ready";
-         }
-
-         ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
-         # if (($self->{partition_status}{int($PartNum)}) eq "ready") { #only change the partition status if the current status is "ready". We dont change if the system is armed.
-         #  if ($PartStatus ne "") {
-         #     $self->{partition_now_msg}       = "$CmdStr";
-         #     $self->{partition_now_status}    = "$PartStatus";
-         #     $self->{partition_now_num}       = "$PartNum";
-         #     ChangePartitions( int($PartNum), int($PartNum), "$PartStatus", 1);
-         #  }
-         # }
+      if (my $ZoneNum = $$self{relay}{$rel_id.$rel_input_id}) {
+         my $ZoneStatus = ($rel_status == 01) ? "fault" : "ready";
+         $self->ChangeZones( int($ZoneNum), int($ZoneNum), "$ZoneStatus", "", 1);
       }
    }
 
@@ -454,10 +450,10 @@ sub CheckCmd {
    # ALWAYS Check Bits in Keypad Message
    if ($status_type->{keypad}) {
       # If this was not a fault message then clear log of last fault msg
-      # TODO This may need to be adjusted if there are some message types that
-      # can be received while a zone is faulted.  Perhaps bypass messages or 
-      # maybed armed messages?
-      $self->{zone_last_num} = "";
+      foreach my $partition (@partitions){
+         $self->{zone_last_num}{$partition} = "" unless $status_type->{fault};
+         $self->{partition_msg}{$partition} = $status_type->{alphanumeric};
+      }
       
       # Set things based on Bit Codes
 
@@ -465,26 +461,17 @@ sub CheckCmd {
       if ( $status_type->{ready_flag}) {
          my $bypass = ($status_type->{bypassed_flag}) ? 'bypass' : '';
          # Reset all zones, if bypass enabled skip bypassed zones
-         ChangeZones( 1, 999, "ready", $bypass, 1);
-
-         my $PartName = my $PartNum = 1;
-
-         $PartName = $main::config_parms{"AD2USB_part_${PartNum}"} 
-            if exists $main::config_parms{"AD2USB_part_${PartNum}"};
-         $self->{partition_now_msg}    = $status_type->{alphanumeric};
-         $self->{partition_now_num}    = $PartNum;
-         $self->{partition_now_status} = "ready";
-         ChangePartitions( $PartNum, $PartNum, "ready", 1);
-         $self->{zone_lowest_fault} = 999;
-         $self->{zone_highest_fault} = -1;            
+         foreach my $partition (@partitions){
+            $self->ChangeZones( 1, 999, "ready", $bypass, 1, $partition);
+         }
+         # TODO - If the partition is set to STAY, does a fault on a motion
+         # sensor cause the ready flag to be set to 0?  If not, then we need
+         # to avoid alterning mapped zones.
       }
 
       # ARMED AWAY
       if ( $status_type->{armed_away_flag}) {
-         my $PartNum = my $PartName = 1;
-         $PartName = $main::config_parms{"AD2USB_part_${PartNum}"} 
-            if exists $main::config_parms{"AD2USB_part_${PartNum}"};
-
+         # TODO The setting of modes needs to be done on partitions
          my $mode = "ERROR";
          if (index($status_type->{alphanumeric}, "ALL SECURE")) {
             $mode = "armed away";
@@ -500,42 +487,27 @@ sub CheckCmd {
          }
 
          $self->set($mode);
-         $self->{partition_now_msg}        = $status_type->{alphanumeric};
-         $self->{partition_now_status}     = "$mode";
-         $self->{partition_now_num}        = "$PartNum";
-         ChangePartitions( int($PartNum), int($PartNum), "$mode", 1);
       }
 
       # ARMED HOME
       if ( $status_type->{armed_home_flag}) {
-         my $PartNum = my $PartName = 1;
-
-         my $mode = "armed stay";
-         $PartName = $main::config_parms{"AD2USB_part_${PartNum}"} 
-            if exists $main::config_parms{"AD2USB_part_${PartNum}"};
-         $self->{partition_now_msg}        = $status_type->{alphanumeric};
-         $self->{partition_now_status}     = "$mode";
-         $self->{partition_now_num}        = "$PartNum";
-         ChangePartitions( int($PartNum), int($PartNum), "$mode", 1);
+         $self->set("armed stay");
       }
 
       # BACKLIGHT
       if ( $status_type->{backlight_flag}) {
-         ::logit( $$self{log_file}, "Panel backlight is on" ) 
-            unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->debug_log("Panel backlight is on");
       }
 
       # PROGRAMMING MODE
       if ( $status_type->{programming_flag}) {
-         ::logit( $$self{log_file}, "Panel is in programming mode" ) 
-            unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->debug_log("Panel is in programming mode"); 
       }
 
       # BEEPS
       if ( $status_type->{beep_count}) {
          my $NumBeeps = $status_type->{beep_count};
-         ::logit( $$self{log_file}, "Panel beeped $NumBeeps times" ) 
-            unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->debug_log("Panel beeped $NumBeeps times"); 
       }
 
       # A ZONE OR ZONES ARE BYPASSED
@@ -546,45 +518,32 @@ sub CheckCmd {
       $$self{ac_power} = 1;
       if ( !$status_type->{ac_flag} ) {
          $$self{ac_power} = 0;
-         ::logit( $$self{log_file}, "AC Power has been lost" );
+         $self->debug_log("AC Power has been lost");;
       }
 
       # CHIME MODE
       $self->{chime} = 0;
       if ( $status_type->{chime_flag}) { 
-         $self->{chime} = 1;#            ::logit( $$self{log_file}, "Chime is off" ) unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->{chime} = 1;#            $self->debug_log("Chime is off");
       }
 
       # ALARM WAS TRIGGERED (Sticky until disarm)
       if ( $status_type->{alarm_past_flag}) {
          my $EventName = "ALARM WAS TRIGGERED";
-         ::logit( $$self{log_file}, "$EventName" ) unless ($main::config_parms{AD2USB_part_log} == 0);
+         $self->debug_log( $$self{log_file}, "$EventName" );
       }
 
       # ALARM IS SOUNDING
       if ( $status_type->{alarm_now_flag}) {
-         my $EventName = "ALARM IS SOUNDING";
-
-         #TODO: figure out how to get a partition number
-         my $PartName = my $PartNum = 1;
-         my $ZoneName = $main::config_parms{"AD2USB_zone_$zone_padded"} 
-            if exists $main::config_parms{"AD2USB_zone_$zone_padded"};
-         $PartName = $main::config_parms{"AD2USB_part_$PartName"} 
-            if exists $main::config_parms{"AD2USB_part_$PartName"};
-         ::logit( $$self{log_file}, "$EventName - Zone $zone_no_pad ($ZoneName)" ) 
-            unless ($main::config_parms{AD2USB_part_log} == 0);
-         ChangeZones( $zone_no_pad, $zone_no_pad, "alarm", "", 1);
-         $self->{partition_now_msg}    = $status_type->{alphanumeric};
-         $self->{partition_now_status} = "alarm";
-         $self->{partition_now_num}    = $PartNum;
-         ChangePartitions( int($PartNum), int($PartNum), "alarm", 1);
+         $self->debug_log( $$self{log_file}, "ALARM IS SOUNDING - Zone $zone_no_pad (".$self->zone_name($zone_no_pad).")" );
+         $self->ChangeZones( $zone_no_pad, $zone_no_pad, "alarm", "", 1);
       }
 
       # BATTERY LOW
       $self->{battery_low} = 0;
       if ( $status_type->{battery_low_flag}) {
          $self->{battery_low} = 1;
-         ::logit( $$self{log_file}, "Panel is low on battery" );
+         $self->debug_log("Panel is low on battery");;
       }
    }
    return;
@@ -594,6 +553,7 @@ sub CheckCmd {
 # Returns a hash reference containing the message details
 sub GetStatusType {
    my ($self, $AdemcoStr) = @_;
+   my $instance = $self->{instance};
    my %message;
 
    # Panel Message Format
@@ -605,6 +565,37 @@ sub GetStatusType {
       $message{numeric_code} = $3;
       $message{raw_data} = $4;
       $message{alphanumeric} = $5;
+      
+      # Partition Data is Contained in the Raw Data, in the form of a bit mask 
+      # identifying the panels that each message is destined for.  By knowing 
+      # which panels are on which partitions, we can determine the partition of 
+      # this message.
+      my $address_mask = substr($message{raw_data}, 2, 8);
+      my @addresses;
+      for (my $b = 3; $b >= 0; $b--){
+          my $byte = hex(uc substr($address_mask, -2));
+          $address_mask = substr($address_mask, 0, -2);
+          for (my $i = 0; $i <= 7; $i++){
+              push (@addresses, (($b*8)+$i)) if ($byte &0b1);
+              $byte = $byte >> 1;
+          }
+      }
+      #Place message in partition if address is equal to partition, or no 
+      #address is specified (system wide messages).
+      foreach my $partition (keys %{$$self{partition_address}}){
+         my $part_addr = $$self{partition_address}{$partition};
+         if (grep($part_addr, @addresses) || 
+            (scalar @addresses == 0)) {
+            push(@{$message{partition}}, $partition);
+         }
+      }
+      if (scalar $message{partition} == 0){
+         # The addresses identified in this message did not match any defined
+         # partition addresses, default to putting in partition 1.
+         @{$message{partition}} = (1); #Default to partition 1
+      }
+
+      # Decipher and Set Bit Flags
       my @flags = ('ready_flag', 'armed_away_flag', 'armed_home_flag',
       'backlight_flag', 'programming_flag', 'beep_count', 'bypassed_flag', 'ac_flag',
       'chime_flag', 'alarm_past_flag', 'alarm_now_flag', 'battery_low_flag', 'no_delay_flag',
@@ -615,15 +606,15 @@ sub GetStatusType {
 
       # Determine the Message Type
       if ( $message{alphanumeric} =~ m/^FAULT/) {
-         ::logit( $$self{log_file}, "Fault zones available: $AdemcoStr") unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->debug_log("Fault zones available: $AdemcoStr");
          $message{fault} = 1;
       }
       elsif ( $message{alphanumeric} =~ m/^BYPAS/ ) {
-         ::logit( $$self{log_file}, "Bypass zones available: $AdemcoStr") unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->debug_log("Bypass zones available: $AdemcoStr");
          $message{bypass} = 1;
       }
       elsif ($message{alphanumeric} =~ m/Hit \*|Press \*/) {
-         ::logit( $$self{log_file}, "Faults available: $AdemcoStr") unless ($main::config_parms{AD2USB_debug_log} == 0);
+         $self->debug_log("Faults available: $AdemcoStr");
          $message{fault_avail} = 1;
       }
       else {
@@ -631,7 +622,7 @@ sub GetStatusType {
       }
    }
    elsif ($AdemcoStr =~ /!RFX:(\d{7}),(\d{2})/) {
-      ::logit( $$self{log_file}, "Wireless status received.") unless ($main::config_parms{AD2USB_debug_log} == 0);
+      $self->debug_log("Wireless status received.");
       $message{wireless} = 1;
       $message{rf_id} = $1;
       $message{rf_status} = $2;
@@ -648,21 +639,21 @@ sub GetStatusType {
 
    }
    elsif ($AdemcoStr =~ /!EXP:(\d{2}),(\d{2}),(\d{2})/) {
-      ::logit( $$self{log_file}, "Expander status received.") unless ($main::config_parms{AD2USB_debug_log} == 0);
+      $self->debug_log("Expander status received.");
       $message{expander} = 1;
       $message{exp_address} = $1;
       $message{exp_channel} = $2;
       $message{exp_status} = $3;
    }
    elsif ($AdemcoStr =~ /!REL:(\d{2}),(\d{2}),(\d{2})/) {
-      ::logit( $$self{log_file}, "Relay status received.") unless ($main::config_parms{AD2USB_debug_log} == 0);
+      $self->debug_log("Relay status received.");
       $message{relay} = 1;
       $message{rel_address} = $1;
       $message{rel_channel} = $2;
       $message{rel_status} = $3;
    }
    elsif ($AdemcoStr =~ /!Sending\.\.\.done/) {
-      ::logit( $$self{log_file}, "Command sent successfully.") unless ($main::config_parms{AD2USB_debug_log} == 0);
+      $self->debug_log("Command sent successfully.");
       $message{cmd_sent} = 1;
    }
    else {
@@ -674,80 +665,55 @@ sub GetStatusType {
 #}}}
 #    Change zone statuses for zone indices from start to end            {{{
 sub ChangeZones {
-   my ($start, $end, $new_status, $neq_status, $log) = @_;
-   my $self = $Self; #Kludge
+   my ($self, $start, $end, $new_status, $neq_status, $log, $partition) = @_;
+   my $instance = $self->{instance};
 
    # Allow for reverse looping from 999->1
    my $reverse = ($start > $end)? 1 : 0;
    for (my $i = $start; (!$reverse && $i <= $end) ||
          ($reverse && ($i >= $start || $i <= $end)); $i++) {
-      my $current_status = $self->{zone_status}{"$i"};
-      if (($current_status ne $new_status) && ($current_status ne $neq_status)) {
-         if (($main::config_parms{AD2USB_zone_log} != 0) && ($log == 1)) {
+      my $current_status = $$self{$self->zone_partition($i)}{zone_status}{$i};
+      # If partition set, then zone partition must equal that
+      if (($current_status ne $new_status) && ($current_status ne $neq_status)
+         && (!$partition || ($partition == $self->zone_partition($i)))) {
+         if ($log == 1) {
             my $ZoneNumPadded = sprintf("%03d", $i);
-            my $ZoneName = "Unknown";
-            $ZoneName = $main::config_parms{"AD2USB_zone_$ZoneNumPadded"}  if exists $main::config_parms{"AD2USB_zone_$ZoneNumPadded"};
-            ::logit( $$self{log_file}, "Zone $i ($ZoneName) changed from '$current_status' to '$new_status'" ) unless ($main::config_parms{AD2USB_zone_log} == 0);
+            $self->debug_log( $$self{log_file}, "Zone $i (".$self->zone_name($i)
+               .") changed from '$current_status' to '$new_status'" );
          }
-         $self->{zone_status}{"$i"} = $new_status;
+         $$self{$self->zone_partition($i)}{zone_status}{$i} = $new_status;
+         #  Store Change for Zone_Now Function
+         $self->{zone_now}{"$i"} = 1;
+         #  Store Change for Partition_Now Function
+         $self->{partition_now}{$partition} = 1;
          #  Set child object status if it is registered to the zone
-         $$self{zone_object}{"$i"}->set($new_status, $$self{zone_object}{"$i"}) if defined $$self{zone_object}{"$i"};
+         $$self{zone_object}{"$i"}->set($new_status, $$self{zone_object}{"$i"}) 
+            if defined $$self{zone_object}{"$i"};
+         my $zone_partition = $self->zone_partition($i);
+         my $partition_status = $self->status_partition($zone_partition);
+         $$self{parition_object}{$zone_partition}->set($partition_status, $$self{zone_object}{"$i"}) 
+            if defined $$self{parition_object}{$zone_partition};
       }
-      $i = 0 if $i == 999; #loop around
+      $i = 0 if ($i == 999 && $reverse); #loop around
    }
 }
 
 #}}}
-#    Change partition statuses for partition indices from start to end  {{{
-sub ChangePartitions {
-   my ($start, $end, $new_status, $log) = @_;
 
-   my $self = $Self;
-   for (my $i = $start; $i <= $end; $i++) {
-      my $current_status = $self->{partition_status}{"$i"};
-      if ($current_status ne $new_status) {
-         if (($main::config_parms{AD2USB_part_log} != 0) && ($log == 1)) {
-            my $PartName = $main::config_parms{"AD2USB_part_$i"}  if exists $main::config_parms{"AD2USB_part_$i"};
-            ::logit( $$self{log_file}, "Partition $i ($PartName) changed from '$current_status' to '$new_status'" ) unless ($main::config_parms{AD2USB_part_log} == 0);
-         }
-         $self->{partition_status}{"$i"} = $new_status;
-      }
-   }
-}
-
-#}}}
-#    Reset Ademco state to simulate a "now" on some value ie: zone, temp etc.  {{{
-sub ResetAdemcoState {
-   my ($self) = @_;
-
-   # reset partition
-   if ( defined $self->{partition_now_num} ) {
-      my $PartNum = $self->{partition_now_num};
-      $self->{partition}{$PartNum}        = $self->{partition_now_num};
-      $self->{partition_msg}{$PartNum}    = $self->{partition_now_msg};
-      $self->{partition_status}{$PartNum} = $self->{partition_now_status};
-      $self->{partition_time}{$PartNum}   = &::time_date_stamp( 17, time );
-      undef $self->{partition_now_num};
-      undef $self->{partition_now_msg};
-      undef $self->{partition_now_status};
-   }
-
-   return;
-}
-
-#}}}
 #    Define hash with Ademco commands                                           {{{
 sub DefineCmdMsg {
+   my ($self) = @_;
+   my $instance = $self->{instance};
    my %Return_Hash = (
-      "Disarm"                            => "$::config_parms{AD2USB_user_master_code}1",
-      "ArmAway"                           => "$::config_parms{AD2USB_user_master_code}2",
-      "ArmStay"                           => "$::config_parms{AD2USB_user_master_code}3",
-      "ArmAwayMax"                        => "$::config_parms{AD2USB_user_master_code}4",
-      "Test"                              => "$::config_parms{AD2USB_user_master_code}5",
-      "Bypass"                            => "$::config_parms{AD2USB_user_master_code}6#",
-      "ArmStayInstant"                    => "$::config_parms{AD2USB_user_master_code}7",
-      "Code"                              => "$::config_parms{AD2USB_user_master_code}8",
-      "Chime"                             => "$::config_parms{AD2USB_user_master_code}9",
+      "Disarm"                            => $Configuration{$instance."_user_master_code"}."1",
+      "ArmAway"                           => $Configuration{$instance."_user_master_code"}."2",
+      "ArmStay"                           => $Configuration{$instance."_user_master_code"}."3",
+      "ArmAwayMax"                        => $Configuration{$instance."_user_master_code"}."4",
+      "Test"                              => $Configuration{$instance."_user_master_code"}."5",
+      "Bypass"                            => $Configuration{$instance."_user_master_code"}."6#",
+      "ArmStayInstant"                    => $Configuration{$instance."_user_master_code"}."7",
+      "Code"                              => $Configuration{$instance."_user_master_code"}."8",
+      "Chime"                             => $Configuration{$instance."_user_master_code"}."9",
       "ToggleVoice"                       => '#024',
       "ShowFaults"                        => "*",
       "AD2USBReboot"                      => "=",
@@ -755,56 +721,57 @@ sub DefineCmdMsg {
    );
 
    my $two_digit_zone;
-   foreach my $key (keys(%::config_parms)) {
+   foreach my $key (keys %Configuration) {
       #Create Commands for Relays
-      if ($key =~ /^AD2USB_output_(\D+)_(\d+)$/){
+      if ($key =~ /^${instance}_output_(\D+)_(\d+)$/){
          if ($1 eq 'co') {
-            $Return_Hash{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
-            $Return_Hash{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
+            $Return_Hash{$Configuration{$key}."c"} = $Configuration{$instance."_user_master_code"}."#70$2";
+            $Return_Hash{$Configuration{$key}."o"} = $Configuration{$instance."_user_master_code"}."#80$2";
          }
          elsif ($1 eq 'oc') {
-            $Return_Hash{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
-            $Return_Hash{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
+            $Return_Hash{$Configuration{$key}."o"} = $Configuration{$instance."_user_master_code"}."#80$2";
+            $Return_Hash{$Configuration{$key}."c"} = $Configuration{$instance."_user_master_code"}."#70$2";
          }
          elsif ($1 eq 'o') {
-            $Return_Hash{"$::config_parms{$key}o"} = "$::config_parms{AD2USB_user_master_code}#80$2";
+            $Return_Hash{$Configuration{$key}."o"} = $Configuration{$instance."_user_master_code"}."#80$2";
          }
          elsif ($1 eq 'c') {
-            $Return_Hash{"$::config_parms{$key}c"} = "$::config_parms{AD2USB_user_master_code}#70$2";
+            $Return_Hash{$Configuration{$key}."c"} = $Configuration{$instance."_user_master_code"}."#70$2";
          }
       }
       #Create Commands for Zone Expanders
-      elsif ($key =~ /^AD2USB_expander_(\d+)$/) {
-         $two_digit_zone = substr($::config_parms{$key}, 1); #Trim leading zero
-         $Return_Hash{"exp$::config_parms{$key}c"} = "L$two_digit_zone"."0";
-         $Return_Hash{"exp$::config_parms{$key}f"} = "L$two_digit_zone"."1";
-         $Return_Hash{"exp$::config_parms{$key}p"} = "L$two_digit_zone"."2"; 
+      elsif ($key =~ /^${instance}_expander_(\d+)$/) {
+         $two_digit_zone = substr($Configuration{$key}, 1); #Trim leading zero
+         $Return_Hash{"exp".$Configuration{$key}."c"} = "L$two_digit_zone"."0";
+         $Return_Hash{"exp".$Configuration{$key}."f"} = "L$two_digit_zone"."1";
+         $Return_Hash{"exp".$Configuration{$key}."p"} = "L$two_digit_zone"."2"; 
       }
    }
 
    return \%Return_Hash;
 }
 
-#}}}
-#    Define hash with all zone numbers and names {{{
-sub ZoneName {
-   #my $self = $Self;
-   my @Name = ["none"];
-
-	foreach my $key (keys(%::config_parms)) {
-		next if $key !~ /^AD2USB_zone_(\d+)$/;
-		$Name[int($1)]=$::config_parms{$key};
-	}
-   return @Name;
+sub debug_log {
+   my ($self, $text) = @_;
+   my $instance = $$self{instance};
+   ::logit( $$self{log_file}, $text) unless ($Configuration{$instance.'_debug_log'} == 0);
 }
 
-
+#}}}
+#    Define hash with all zone numbers and names {{{
 sub MappedZones {
-	foreach my $mkey (keys(%::config_parms)) {
-                next if $mkey !~ /^AD2USB_(relay|wireless|expander)_(\d+)$/;
-                if ("@_" eq $::config_parms{$mkey}) { return 1 }
-        }
-    return 0;
+   my ($self, $zone) = @_;
+   my $instance = $self->{instance};
+   foreach my $mkey (keys $$self{relay}) {
+      if ($zone eq $$self{relay}{$mkey}) { return 1 }
+   }
+   foreach my $mkey (keys $$self{wireless}) {
+      if ($zone eq $$self{wireless}{$mkey}) { return 1 }
+   }
+   foreach my $mkey (keys $$self{expander}) {
+      if ($zone eq $$self{expander}{$mkey}) { return 1 }
+   }
+   return 0;
 }
 
 #}}}
@@ -824,12 +791,12 @@ sub cmd {
    }
 
    # Exit if password is wrong
-   if ( ($password ne $::config_parms{AD2USB_user_master_code}) && ($CmdName ne "ShowFaults" ) ) {
+   if ( ($password ne $Configuration{$instance.'_user_master_code'}) && ($CmdName ne "ShowFaults" ) ) {
       ::logit( $$self{log_file}, "Invalid password for command $CmdName ($password)");
       return;
    }
 
-   ::logit( $$self{log_file}, ">>> Sending to ADEMCO panel                      $CmdName ($cmd)" ) unless ($main::config_parms{$instance . '_debug_log'} == 0);
+   $self->debug_log(">>> Sending to ADEMCO panel              $CmdName ($cmd)");
    $self->{keys_sent} = $self->{keys_sent} + length($CmdStr);
    if (defined $Socket_Items{$instance}) {
       if ($Socket_Items{$instance . '_sender'}{'socket'}->active) {
@@ -839,7 +806,7 @@ sub cmd {
          if ($Socket_Items{$instance}{recon_timer}->inactive) {
             ::print_log("Connection to $instance sending instance of AD2USB was lost, I will try to reconnect in $$self{reconnect_time} seconds");
             $Socket_Items{$instance}{recon_timer}->set($$self{reconnect_time}, sub {
-               $Socket_Items{$instance}{'socket'}->start;
+               $Socket_Items{$instance . '_sender'}{'socket'}->start;
                $Socket_Items{$instance . '_sender'}{'socket'}->set("$CmdStr");
             });
          }
@@ -854,58 +821,69 @@ sub cmd {
 #}}}
 #    user call from MH                                                         {{{
 
-sub zone_now_restore {
-   return $_[0]->{zone_now_restore} if defined $_[0]->{zone_now_restore};
-}
-
-sub zone_now_tamper {
-   return $_[0]->{zone_now_tamper} if defined $_[0]->{zone_now_tamper};
-}
-
-sub zone_now_tamper_restore {
-   return $_[0]->{zone_now_tamper_restore} if defined $_[0]->{zone_now_tamper_restore};
-}
-
-sub zone_now_alarm {
-   return $_[0]->{zone_now_alarm} if defined $_[0]->{zone_now_alarm};
-}
-
-sub zone_now_alarm_restore {
-   return $_[0]->{zone_now_alarm_restore} if defined $_[0]->{zone_now_alarm_restore};
-}
-
-sub zone_now_fault {
-   return $_[0]->{zone_now_num} if defined $_[0]->{zone_now_num};
-}
-
 sub status_zone {
-   my ( $class, $zone ) = @_;
-   return $_[0]->{zone_status}{$zone} if defined $_[0]->{zone_status}{$zone};
+   my ( $self, $zone ) = @_;
+   $zone =~ s/^0*//;
+   return $$self{$self->zone_partition($zone)}{zone_status}{$zone};
+}
+
+sub zone_now {
+   my ( $self, $zone ) = @_;
+   $zone =~ s/^0*//;
+   return $self->{zone_now}{$zone};
 }
 
 sub zone_name {
-   my ( $class, $zone_num ) = @_;
+   my ( $self, $zone_num ) = @_;
+   my $instance = $self->{instance};
    $zone_num = sprintf "%03s", $zone_num;
-   my $ZoneName = $main::config_parms{"AD2USB_zone_$zone_num"} if exists $main::config_parms{"AD2USB_zone_$zone_num"};
-   return $ZoneName if $ZoneName;
-   return $zone_num;
+   return $$self{zone_name}{$zone_num};
+}
+
+sub zone_partition {
+   my ( $self, $zone_num ) = @_;
+   my $instance = $self->{instance};
+   $zone_num = sprintf "%03s", $zone_num;
+   my $partition = $$self{zone_partition}{$zone_num};
+   # Default to partition 1
+   $partition = 1 unless $partition;
+   return $partition;
 }
 
 sub partition_now {
-   my ( $class, $part ) = @_;
-   return $_[0]->{partition_now_num} if defined $_[0]->{partition_now_num};
+   my ( $self, $part ) = @_;
+   return $self->{partition_now}{$part};
 }
 
-sub partition_now_msg {
-   my ( $class, $part ) = @_;
-   return $_[0]->{partition_now_msg} if defined $_[0]->{partition_now_msg};
+sub partition_msg {
+   my ( $self, $part ) = @_;
+   return $self->{partition_msg}{part};
 }
 
 sub partition_name {
-   my ( $class, $part_num ) = @_;
-   my $PartName = $main::config_parms{"AD2USB_part_$part_num"} if exists $main::config_parms{"AD2USB_part_$part_num"};
-   return $PartName if $PartName;
-   return $part_num;
+   my ( $self, $part_num ) = @_;
+   my $instance = $self->{instance};
+   return $$self{partition_name}{$part_num};
+}
+
+sub status_partition {
+   my ( $self, $partition ) = @_;
+   my %partition_zones = %{$$self{$partition}{zone_status}};
+   my $partition_status = 'ready';
+   for my $zone (keys %partition_zones){
+      if ($partition_zones{$zone} eq 'fault'){
+         $partition_status = 'fault';
+         last;
+      }
+      elsif ($partition_zones{$zone} eq 'alarm'){
+         $partition_status = 'alarm';
+         last;
+      }
+      elsif ($partition_zones{$zone} eq 'bypass'){
+         $partition_status = 'bypass';
+      }
+   }
+   return $partition_status;
 }
 
 sub cmd_list {
@@ -915,12 +893,17 @@ sub cmd_list {
    }
 }
 #}}}
-##Used to register a child object to the zone. Allows for MH-style Door & Motion sensors {{{
+##Used to register a child object to a zone or partition. Allows for MH-style Door & Motion sensors {{{
 sub register {
-   my ($self, $object, $zone_num ) = @_;
-   &::print_log("Registering Child Object on zone $zone_num");
-   $self->{zone_object}{$zone_num} = $object;
+   my ($self, $object, $num ) = @_;
+   &::print_log("Registering Child Object on zone $num");
+   if ($object->isa('AD2USB_Motion_Item') || $object->isa('AD2USB_Door_Item')) {
+      $self->{zone_object}{$num} = $object;
    }
+   elsif ($object->isa('AD2USB_Partition')) {
+      $self->{partition_object}{$num} = $object;
+   }
+}
 
 sub get_child_object_name {
    my ($self,$zone_num) = @_;
@@ -948,22 +931,17 @@ package AD2USB_Door_Item;
 
 sub new
 {
-   my ($class,$object,$zone) = @_;
+   my ($class,$interface,$zone,$partition) = @_;
 
    my $self = new Generic_Item();
    bless $self,$class;
 
-   $$self{m_write} = 0;
-   $$self{m_timerCheck} = new Timer() unless $$self{m_timerCheck};
-   $$self{m_timerAlarm} = new Timer() unless $$self{m_timerAlarm};
-   $$self{'alarm_action'} = '';
    $$self{last_open} = 0;
    $$self{last_closed} = 0;
-   $$self{zone_number} = $zone;
-   $$self{master_object} = $object;
    $$self{item_type} = 'door';
-   $object->register($self,$zone);
-
+   $interface->register($self,$zone);
+   $zone = sprintf("%03d", $zone);
+   $$self{zone_partition}{$zone} = $partition;
    return $self;
 
 }
@@ -978,25 +956,13 @@ sub set
          &::print_log("AD2USB_Door_Item($$self{object_name})::set($p_state, $p_setby)") if $main::Debug{AD2USB};
       }
 
-      if ($p_state =~ /^fault/) {
+      if ($p_state =~ /^fault/ || $p_state eq 'on') {
          $p_state = 'open';
          $$self{last_open} = $::Time;
 
-      } elsif ($p_state =~ /^ready/) {
+      } elsif ($p_state =~ /^ready/ || $p_state eq 'off') {
          $p_state = 'closed';
          $$self{last_closed} = $::Time;
-
-      # Other door sensors?
-      } elsif ($p_state eq 'on') {
-         $p_state = 'open';
-         $$self{last_open} = $::Time;
-
-      } elsif ($p_state eq 'off') {
-         $p_state = 'closed';
-         $$self{last_closed} = $::Time;
-
-      } else {
-      	 $p_state = 'check';
       }
 
       $self->SUPER::set($p_state,$p_setby);
@@ -1017,48 +983,23 @@ sub get_child_item_type {
    return $$self{item_type};
 }
 
-#Left in these methods to maintain compatibility. Since we're not tracking inactivity, these won't return proper results. {{{
-
-sub set_alarm($$$) {
-   my ($self, $time, $action, $repeat_time) = @_;
-   $$self{'alarm_action'} = $action;
-   $$self{'alarm_time'} = $time;
-   $$self{'alarm_repeat_time'} = $repeat_time if defined $repeat_time;
-   &::print_log ("AD2USB_Door_Item:: set_alarm not supported");
-
-}
-
-sub set_inactivity_alarm($$$) {
-   my ($self, $time, $action) = @_;
-   $$self{'inactivity_action'} = $action;
-   $$self{'inactivity_time'} = $time*3600;
-   &::print_log("AD2USB_Door_Item:: set_inactivity_alarm not supported");
-
-}
-
 #}}}
 package AD2USB_Motion_Item;
 @AD2USB_Motion_Item::ISA = ('Generic_Item');
 
 sub new
 {
-   my ($class,$object,$zone) = @_;
+   my ($class,$interface,$zone,$partition) = @_;
 
    my $self = new Generic_Item();
    bless $self,$class;
 
-   $$self{m_write} = 0;
-   $$self{m_timerCheck} = new Timer() unless $$self{m_timerCheck};
-   $$self{m_timerAlarm} = new Timer() unless $$self{m_timerAlarm};
-   $$self{'alarm_action'} = '';
    $$self{last_still} = 0;
    $$self{last_motion} = 0;
-   $$self{zone_number} = $zone;
-   $$self{master_object} = $object;
    $$self{item_type} = 'motion';
-
-   $object->register($self,$zone);
-
+   $interface->register($self,$zone);
+   $zone = sprintf("%03d", $zone);
+   $$self{zone_partition}{$zone} = $partition;
    return $self;
 
 }
@@ -1077,13 +1018,9 @@ sub set
    if ($p_state =~ /^fault/i) {
       $p_state = 'motion';
       $$self{last_motion} = $::Time;
-
    } elsif ($p_state =~ /^ready/i) {
       $p_state = 'still';
       $$self{last_still} = $::Time;
-
-   } else {
-      $p_state = 'check';
    }
 
 	$self->SUPER::set($p_state, $p_setby);
@@ -1104,22 +1041,19 @@ sub get_child_item_type {
    return $$self{item_type};
 }
 
-#Left in these methods to maintain compatibility. Since we're not tracking inactivity, these won't return proper results. {{{
-sub delay_off()
+package AD2USB_Partition;
+@AD2USB_Partition::ISA = ('Generic_Item');
+
+sub new
 {
-	my ($self,$p_time) = @_;
-	$$self{m_delay_off} = $p_time if defined $p_time;
-	&::print_log("AD2USB_Motion_Item:: delay_off not supported");
-	return $$self{m_delay_off};
+   my ($class,$interface, $partition, $address) = @_;
+   my $self = new Generic_Item();
+   bless $self,$class;
+   $$interface{partition_address}{$partition} = $address;
+   $interface->register($self,$partition);
+   return $self;
 }
 
-sub set_inactivity_alarm($$$) {
-   my ($self, $time, $action) = @_;
-   $$self{'inactivity_action'} = $action;
-   $$self{'inactivity_time'} = $time*3600;
-	$$self{m_timerCheck}->set($time*3600, $self);
-	&::print_log("AD2USB_Motion_Item:: set_inactivity_alarm not supported");
-}
 
 =back
 
