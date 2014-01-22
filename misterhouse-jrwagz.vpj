@@ -1,0 +1,76 @@
+<!DOCTYPE Project SYSTEM "http://www.slickedit.com/dtd/vse/10.0/vpj.dtd">
+<Project
+    Version="10.0"
+    VendorName="SlickEdit"
+    TemplateName="Perl"
+    WorkingDir="."
+    VCSProject="Git:">
+    <CustomFolders>
+        <Folder
+            Name="Source Files"
+            Filters="*.pl;*.pm;*.perl;*.plx"/>
+        <Folder
+            Name="Other Files"
+            Filters="">
+        </Folder>
+    </CustomFolders>
+    <Config
+        Name="Debug"
+        DebugCallbackName="perl5db"
+        Type="perl"
+        OutputFile=""
+        CompilerConfigName="">
+        <Menu>
+            <Target
+                Name="Execute"
+                MenuCaption="E&amp;xecute"
+                Dialog="_perl_options_form Run"
+                CaptureOutputWith="ProcessBuffer"
+                SaveOption="SaveNone"
+                RunFromDir="%rw"
+                Deletable="0">
+                <Exec CmdLine='"%(SLICKEDIT_PERL_EXE)" %(SLICKEDIT_PERL_EXECUTE_ARGS) "%f" %~other'/>
+            </Target>
+            <Target
+                Name="Debug"
+                MenuCaption="&amp;Debug"
+                Dialog="_perl_options_form Debug"
+                CaptureOutputWith="ProcessBuffer"
+                SaveOption="SaveNone"
+                RunFromDir="%rw"
+                Deletable="0">
+                <Exec
+                    CmdLine="perl_debug"
+                    Type="Slick-C"/>
+            </Target>
+            <Target
+                Name="Perl Options"
+                MenuCaption="Perl &amp;Options"
+                ShowOnMenu="HideIfNoCmdLine"
+                Deletable="0">
+                <Exec
+                    CmdLine="perloptions"
+                    Type="Slick-C"/>
+            </Target>
+        </Menu>
+        <List Name="Perl Options">
+        </List>
+        <List Name="perl5db Options">
+            <Item
+                Name="ServerHost"
+                Value="127.0.0.1"/>
+            <Item
+                Name="ServerPort"
+                Value="0"/>
+            <Item
+                Name="ListenInBackground"
+                Value="1"/>
+        </List>
+    </Config>
+    <Files AutoFolders="DirectoryView">
+        <F
+            N="*.*"
+            Recurse="1"
+            Excludes="*.sof;*.jic;*.rbf;*.qar;*.qarlog;*.img;*.bin;*.bit;*.mcs;*.vpj;*.vpw;*.vpwhist;*.vtg;.git/"/>
+    </Files>
+</Project>
