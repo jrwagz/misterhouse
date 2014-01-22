@@ -1314,7 +1314,7 @@ Contols the style of we form used when displaying states of this item on a web p
 sub set_web_style {
     my ( $self, $style ) = @_;
 
-    my %valid_styles = map { $_ => 1 } qw( dropdown radio url );
+    my %valid_styles = map { $_ => 1 } qw( dropdown radio url value multiswitch slider switch );
 
     if ( !$valid_styles{ lc( $style ) } ) {
         &main::print_log( "Invalid style ($style) passed to set_web_style.  " .
